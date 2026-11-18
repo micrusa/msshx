@@ -1,0 +1,2 @@
+- Keep things simple, keep classes short. Do not overengineer
+- Keep texts short and concise. Easy to read. Do not be verbose
