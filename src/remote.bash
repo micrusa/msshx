@@ -5,10 +5,13 @@ _msshx_clipboard() {
 }
 
 _msshx_request() {
-    local operation=$1 value=$2 encoded
+    local operation=$1 value=$2 encoded token
     shift 2
     encoded=$(printf '%s' "$value" | command base64 | command tr -d '\r\n') || return
-    command curl --disable --silent --show-error --fail-with-body --globoff \
+    token=$(<"${_msshx_socket%/*}/token") || return
+    [[ $token =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        command curl --disable --config - --silent --show-error --fail-with-body --globoff \
         --noproxy '*' --unix-socket "$_msshx_socket" \
         --header "X-Msshx-Value: $encoded" "$@" "http://localhost/$operation"
 }

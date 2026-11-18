@@ -1,3 +1,4 @@
+use crate::approval::Approver;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::env;
 use std::fs::File;
@@ -9,9 +10,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tiny_http::{Method, Request, Response, ResponseBox, Server};
 
-pub fn serve(server: Server, control_socket: &Path) {
+pub fn serve(server: Server, control_socket: &Path, authorization: &str, approver: &Approver) {
     for mut request in server.incoming_requests() {
-        let response = handle(&mut request, control_socket).unwrap_or_else(|error| {
+        if !request.headers().iter().any(|header| {
+            header.field.equiv("Authorization") && header.value.as_str() == authorization
+        }) {
+            let _ = request
+                .respond(Response::from_string("Invalid session token\n").with_status_code(401));
+            continue;
+        }
+        let response = handle(&mut request, control_socket, approver).unwrap_or_else(|error| {
             Response::from_string(format!("{error}\n"))
                 .with_status_code(400)
                 .boxed()
@@ -20,7 +28,11 @@ pub fn serve(server: Server, control_socket: &Path) {
     }
 }
 
-fn handle(request: &mut Request, control_socket: &Path) -> io::Result<ResponseBox> {
+fn handle(
+    request: &mut Request,
+    control_socket: &Path,
+    approver: &Approver,
+) -> io::Result<ResponseBox> {
     let value = request
         .headers()
         .iter()
@@ -31,6 +43,7 @@ fn handle(request: &mut Request, control_socket: &Path) -> io::Result<ResponseBo
     match (request.method(), request.url()) {
         (&Method::Get, "/from-client") => {
             let path = client_path(value)?;
+            approver.confirm("Send this client file to the SSH server?", &path)?;
             let metadata = path.metadata()?;
             if !metadata.is_file() {
                 return Err(io::Error::other("expected a regular file"));
@@ -41,6 +54,7 @@ fn handle(request: &mut Request, control_socket: &Path) -> io::Result<ResponseBo
         }
         (&Method::Put, "/to-client") => {
             let destination = client_path(value)?;
+            approver.confirm("Write or replace this client file?", &destination)?;
             let parent = destination
                 .parent()
                 .ok_or_else(|| io::Error::other("invalid destination"))?;
@@ -57,6 +71,10 @@ fn handle(request: &mut Request, control_socket: &Path) -> io::Result<ResponseBo
         }
         (&Method::Post, "/open") => {
             let url = std::str::from_utf8(&value).map_err(io::Error::other)?;
+            approver.confirm(
+                "Open this URL on the client, forwarding remote loopback if needed?",
+                url,
+            )?;
             let forwarded = forwarded_url(control_socket, url)?;
             let url = forwarded.as_deref().unwrap_or(url);
             let opener = if cfg!(target_os = "macos") {
@@ -75,7 +93,7 @@ fn handle(request: &mut Request, control_socket: &Path) -> io::Result<ResponseBo
             });
             Ok(Response::empty(204).boxed())
         }
-        (&Method::Post, "/forward") => forward(control_socket, &value),
+        (&Method::Post, "/forward") => forward(control_socket, &value, approver),
         _ => Err(io::Error::other("unknown operation")),
     }
 }
@@ -138,7 +156,7 @@ fn forwarded_url(socket: &Path, url: &str) -> io::Result<Option<String>> {
     }
 }
 
-fn forward(socket: &Path, value: &[u8]) -> io::Result<ResponseBox> {
+fn forward(socket: &Path, value: &[u8], approver: &Approver) -> io::Result<ResponseBox> {
     let value = std::str::from_utf8(value).map_err(io::Error::other)?;
     let (local, remote) = value.split_once(':').unwrap_or((value, value));
     let port = |value: &str| {
@@ -147,6 +165,10 @@ fn forward(socket: &Path, value: &[u8]) -> io::Result<ResponseBox> {
             .map_err(|_| io::Error::other("expected PORT or LOCAL_PORT:REMOTE_PORT (1–65535)"))
     };
     let (local, remote) = (port(local)?, port(remote)?);
+    approver.confirm(
+        "Forward a client loopback port to the SSH server?",
+        &format!("Client 127.0.0.1:{local} → remote 127.0.0.1:{remote}"),
+    )?;
     add_forward(socket, local.get(), "127.0.0.1", remote.get())?;
     Ok(Response::from_string(format!(
         "Forwarding client 127.0.0.1:{local} to remote 127.0.0.1:{remote}\n"

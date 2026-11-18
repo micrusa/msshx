@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.22"
+libc = "0.2"
+signal-hook = "0.3"
 tempfile = "3"
 tiny_http = "0.12"
