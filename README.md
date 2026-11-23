@@ -21,7 +21,7 @@ Interactive sessions load local `~/.bashrc` aliases, excluding `msshx` and the w
 | `copen https://example.com` | Open a URL on the client. Also `clientopen`. |
 | `copen 127.0.0.1:8080` | Forward the remote loopback URL to an available client port and open it. The forward lasts until SSH exits. |
 | `cpush ~/Documents/file.pdf [remote-file]` | Copy a client file to the remote current directory or the given remote filename. Also `clientpush`. |
-| `cpull ./file.pdf [client-file]` | Copy a remote file to the client’s `~/Downloads` or the given client filename. Also `clientpull`. |
+| `cpull ./file.pdf [client-file]` or `cpull *.pdf [client-dir/]` | Copy remote file(s) to the client’s `~/Downloads`, a client filename, or a client directory. Also `clientpull`. |
 
 Destination directories must exist. Relative client paths start where you launched `msshx`. Clipboard copying needs terminal support for OSC 52 and uses no tunnel. Paste with your terminal’s usual shortcut.
 

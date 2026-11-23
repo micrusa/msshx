@@ -50,18 +50,38 @@ _msshx_push() {
 }
 
 _msshx_pull() {
-    if [[ $# -lt 1 || $# -gt 2 || ! -f $1 ]]; then
-        printf 'Usage: cpull REMOTE_FILE [CLIENT_FILE]\n' >&2
+    if [[ $# -lt 1 ]]; then
+        printf 'Usage: cpull REMOTE_FILE [CLIENT_FILE]\n       cpull REMOTE_FILE... [CLIENT_DIR/]\n' >&2
         return 2
     fi
-    local source=$1 destination
-    [[ $source == /* ]] || source=$PWD/$source
-    if [[ $# == 2 ]]; then
+    local source destination
+    if [[ $# == 2 && ! -f $2 && $2 != */ ]]; then
+        if [[ ! -f $1 ]]; then
+            printf 'cpull: %s: not a regular file\n' "$1" >&2
+            return 1
+        fi
+        source=$1
+        [[ $source == /* ]] || source=$PWD/$source
         destination=$(_msshx_client_path "$2")
-    else
-        destination="~/Downloads/${1##*/}"
+        _msshx_request to-client "$destination" --upload-file "$source"
+        return
     fi
-    _msshx_request to-client "$destination" --upload-file "$source"
+    local dir="~/Downloads/" files=("$@")
+    if [[ $# -ge 2 && ${!#} == */ ]]; then
+        dir=$(_msshx_client_path "${!#}")
+        files=("${@:1:$#-1}")
+    fi
+    for source in "${files[@]}"; do
+        if [[ ! -f $source ]]; then
+            printf 'cpull: %s: not a regular file\n' "$source" >&2
+            return 1
+        fi
+    done
+    for source in "${files[@]}"; do
+        destination="${dir}${source##*/}"
+        [[ $source == /* ]] || source=$PWD/$source
+        _msshx_request to-client "$destination" --upload-file "$source" || return
+    done
 }
 
 _msshx_forward() {
