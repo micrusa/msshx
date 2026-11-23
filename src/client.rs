@@ -69,6 +69,47 @@ fn handle(
             file.persist(destination)?;
             Ok(Response::empty(204).boxed())
         }
+        (&Method::Put, "/to-client-dir") => {
+            let destination = client_path(value)?;
+            approver.confirm("Write or update this client directory?", &destination)?;
+            let parent = destination
+                .parent()
+                .ok_or_else(|| io::Error::other("invalid destination"))?;
+            if !parent.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "destination parent directory does not exist",
+                ));
+            }
+            if destination.exists() {
+                if !destination.is_dir() {
+                    return Err(io::Error::other("destination exists and is not a directory"));
+                }
+            } else {
+                std::fs::create_dir(&destination)?;
+            }
+            let mut child = Command::new("tar")
+                .args(["-xf", "-", "-C"])
+                .arg(&destination)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let copy_result = {
+                let mut stdin = child.stdin.take().unwrap();
+                io::copy(request.as_reader(), &mut stdin)
+            };
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                let message = String::from_utf8_lossy(&output.stderr);
+                return Err(io::Error::other(format!(
+                    "could not extract directory: {}",
+                    message.trim()
+                )));
+            }
+            copy_result?;
+            Ok(Response::empty(204).boxed())
+        }
         (&Method::Post, "/open") => {
             let url = std::str::from_utf8(&value).map_err(io::Error::other)?;
             approver.confirm(
@@ -197,4 +238,58 @@ fn add_forward(socket: &Path, local: u16, host: &str, remote: u16) -> io::Result
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approval;
+    use std::fs;
+    use std::thread;
+
+    #[test]
+    fn pull_files_and_folders_with_wildcards() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("client.sock");
+        let token = "0".repeat(64);
+        fs::write(dir.path().join("token"), &token).unwrap();
+
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("batch-dir/sub")).unwrap();
+        fs::write(src.join("batch-file.txt"), "hello").unwrap();
+        fs::write(src.join("batch-dir/sub/nested.txt"), "world").unwrap();
+
+        let dst = dir.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        let server = Server::http_unix(&socket).unwrap();
+        let (approver, approvals) = approval::channel();
+        let auth = format!("Bearer {token}");
+        let control = dir.path().join("ctl");
+        thread::spawn(move || serve(server, &control, &auth, &approver));
+        thread::spawn(move || {
+            for req in approvals {
+                let _ = req.answer.send(true);
+            }
+        });
+
+        let script = format!(
+            "set -euo pipefail; _msshx_socket={}; source {}/src/remote.bash; cd {} && _msshx_pull batch-* {}/",
+            socket.display(),
+            env!("CARGO_MANIFEST_DIR"),
+            src.display(),
+            dst.display(),
+        );
+        let output = Command::new("bash").args(["-c", &script]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read_to_string(dst.join("batch-file.txt")).unwrap(), "hello");
+        assert_eq!(
+            fs::read_to_string(dst.join("batch-dir/sub/nested.txt")).unwrap(),
+            "world"
+        );
+    }
 }

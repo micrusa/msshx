@@ -10,8 +10,8 @@ _msshx_request() {
     encoded=$(printf '%s' "$value" | command base64 | command tr -d '\r\n') || return
     token=$(<"${_msshx_socket%/*}/token") || return
     [[ $token =~ ^[0-9a-f]{64}$ ]] || return 1
-    printf 'header = "Authorization: Bearer %s"\n' "$token" |
-        command curl --disable --config - --silent --show-error --fail-with-body --globoff \
+    command curl --disable --config <(printf 'header = "Authorization: Bearer %s"\n' "$token") \
+        --silent --show-error --fail-with-body --globoff \
         --noproxy '*' --unix-socket "$_msshx_socket" \
         --header "X-Msshx-Value: $encoded" "$@" "http://localhost/$operation"
 }
@@ -49,38 +49,54 @@ _msshx_push() {
     return 1
 }
 
+_msshx_pull_one() {
+    local source=$1 destination=$2
+    if [[ -d $source ]]; then
+        command tar -cf - -C "$source" . |
+            _msshx_request to-client-dir "$destination" --upload-file -
+        local statuses=("${PIPESTATUS[@]}")
+        (( statuses[0] == 0 && statuses[1] == 0 ))
+    else
+        [[ $source == /* ]] || source=$PWD/$source
+        _msshx_request to-client "$destination" --upload-file "$source"
+    fi
+}
+
 _msshx_pull() {
     if [[ $# -lt 1 ]]; then
-        printf 'Usage: cpull REMOTE_FILE [CLIENT_FILE]\n       cpull REMOTE_FILE... [CLIENT_DIR/]\n' >&2
+        printf 'Usage: cpull REMOTE_PATH [CLIENT_PATH]\n       cpull REMOTE_PATH... [CLIENT_DIR/]\n' >&2
         return 2
     fi
     local source destination
-    if [[ $# == 2 && ! -f $2 && $2 != */ ]]; then
-        if [[ ! -f $1 ]]; then
-            printf 'cpull: %s: not a regular file\n' "$1" >&2
+    if [[ $# == 2 && ! -e $2 && $2 != */ ]]; then
+        if [[ ! -f $1 && ! -d $1 ]]; then
+            printf 'cpull: %s: not a file or directory\n' "$1" >&2
             return 1
         fi
-        source=$1
-        [[ $source == /* ]] || source=$PWD/$source
         destination=$(_msshx_client_path "$2")
-        _msshx_request to-client "$destination" --upload-file "$source"
+        _msshx_pull_one "$1" "$destination"
         return
     fi
-    local dir="~/Downloads/" files=("$@")
+    local dir="~/Downloads/" items=("$@")
     if [[ $# -ge 2 && ${!#} == */ ]]; then
         dir=$(_msshx_client_path "${!#}")
-        files=("${@:1:$#-1}")
+        items=("${@:1:$#-1}")
     fi
-    for source in "${files[@]}"; do
-        if [[ ! -f $source ]]; then
-            printf 'cpull: %s: not a regular file\n' "$source" >&2
+    for source in "${items[@]}"; do
+        if [[ ! -f $source && ! -d $source ]]; then
+            printf 'cpull: %s: not a file or directory\n' "$source" >&2
             return 1
         fi
     done
-    for source in "${files[@]}"; do
-        destination="${dir}${source##*/}"
-        [[ $source == /* ]] || source=$PWD/$source
-        _msshx_request to-client "$destination" --upload-file "$source" || return
+    local name
+    for source in "${items[@]}"; do
+        name=$source
+        while [[ $name == */ && $name != / ]]; do name=${name%/}; done
+        if [[ -d $source && ( $name == . || $name == .. || $name == */. || $name == */.. ) ]]; then
+            name=$(cd -- "$source" && pwd) || return
+        fi
+        destination="${dir}${name##*/}"
+        _msshx_pull_one "$source" "$destination" || return
     done
 }
 
